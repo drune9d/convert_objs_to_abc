@@ -40,21 +40,14 @@ gh release create "$TAG" "$ZIP_PATH" \
   --title "OBJ Sequence to Alembic $TAG" \
   --notes "## What's new in $TAG
 
-### Bug fixes
-- Fixed frozen animation: every frame after the first failed to load (backslash paths could not be opened by the fast reader), so the cache played back as a single static frame. Animation is restored.
-- The app's Rebuild / Build Converter now works when launched from Finder (Homebrew is added to PATH; previously it reported 'Homebrew was not found').
-- Fixed incorrect face winding (reversed CCW→CW) that caused invalid geometry, disappearing mesh pieces, and playback crashes in Blender.
-- UVs are only written when the OBJ actually contains them (previously an uninitialized, garbage UV map could be emitted).
-- Hardened against blank lines and missing command-line argument values.
+### Changing topology
+- Each frame is now written with its own full topology. Sequences whose vertex and face counts change over time — fracture, fluid, and remeshing simulations — are preserved correctly instead of being frozen to the first frame's topology (which previously made later pieces disappear).
 
-### Performance
-- OBJ frames are read with a bounded prefetch pipeline that overlaps reading and writing across CPU cores, with faster strtof-based vertex parsing.
-
-### GUI
-- Determinate progress bar with a per-frame counter (e.g. \`12 / 300\`) during conversion.
-
-### Diagnostics
-- The log now reports how many OBJ files were found and warns if a frame cannot be read."
+### From earlier 1.2.x
+- Restored animation that was frozen to a single frame, and made Rebuild work when the app is launched from Finder.
+- Fixed face winding, and only write UVs when the OBJ actually contains them.
+- Bounded prefetch pipeline that overlaps reading and writing across CPU cores.
+- Determinate progress bar with a per-frame counter, plus clearer log diagnostics."
 
 echo
 echo "Draft release created for $TAG"

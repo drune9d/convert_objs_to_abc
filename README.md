@@ -119,3 +119,24 @@ If Homebrew itself is missing, install it from:
 ```text
 https://brew.sh
 ```
+
+## Changing Topology
+
+Each frame is written with its own topology, so sequences whose vertex and face
+counts change over time — fracture, fluid, or remeshing simulations — are
+preserved correctly rather than frozen to the first frame. The output stays full
+per-frame topology; control file size by exporting fewer frames or simplifying
+the mesh upstream in your DCC.
+
+## Credits
+
+This project builds on the original
+[convert_objs_to_abc](https://github.com/ziyeshanwai/convert_objs_to_abc) by
+Liyou, which provides the core OBJ-to-Alembic conversion. This fork adds a macOS
+app and command-line build, a Tk GUI with progress reporting, changing-topology
+support, and a number of correctness and performance fixes.
+
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE). Original work
+Copyright (c) 2022 Liyou.

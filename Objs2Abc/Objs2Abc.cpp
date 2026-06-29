@@ -1,114 +1,29 @@
-﻿// Alembic Includes
+﻿// Converts a numbered OBJ frame sequence into an Alembic (.abc) PolyMesh cache.
+// Each frame is written with its own full topology, so sequences whose vertex
+// and face counts change over time (fracture, fluid, remeshing sims) are
+// preserved rather than frozen to the first frame.
+
+// Alembic
 #include <Alembic/AbcGeom/All.h>
 #include <Alembic/AbcCoreOgawa/All.h>
-#include <algorithm>
-// Other includes
-#include <iostream>
-#include <stdio.h>
-#include <stdlib.h>
 
+// Standard library
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <mutex>
-#include <sstream>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string>
 #include <thread>
 #include <Vector>
 #include <io.h>
-#include <algorithm>
-
-#include <cstdio>
-
-// We include some global mesh data to test with from an external source
-// to keep this example code clean.
 
 using namespace std;
 using namespace Alembic::AbcGeom; // Contains Abc, AbcCoreAbstract
-
-
-struct vertice
-{
-	float x;
-	float y;
-	float z;
-};
-
-struct uv
-{
-	float u;
-	float v;
-};
-
-
-
-void ReadObj(const std::string& path, std::vector<vertice>& OutVertices, std::vector<uv>& OutUvs, std::vector<vertice>& OutNormals, std::vector<int>& OutFaceVertices, std::vector<int>& OutFaceUvs, std::vector<int>& Outgcounts) {
-	std::string s, str, s1, s2, s3;
-	std::ifstream inf;
-	vertice v;
-	vertice normal;
-	uv u;
-	inf.open(path);
-
-	if (inf.is_open()) {
-		while (getline(inf, s)) {
-			if (s.empty()) continue;
-			if (s[0] == 'v' && s.size() > 1) {
-				if (s[1] == 't') {
-					std::istringstream in(s);
-					in >> s1 >> u.u >> u.v;
-					OutUvs.push_back(u);
-				}
-				else if (s[1] == 'n') {
-					std::istringstream in(s);
-					in >> s1 >> normal.x >> normal.y >> normal.z;
-					OutNormals.push_back(normal);
-				}
-				else {
-					std::istringstream in(s);
-					in >> s1 >> v.x >> v.y >> v.z;
-					OutVertices.push_back(v);
-				}
-			}
-
-			if (s[0] == 'f') {
-				std::istringstream in(s);
-				std::string face;
-				std::vector<int> vertexIndices;
-				std::vector<int> uvIndices;
-				std::vector<int> normalIndices;
-
-				while (in >> face) {
-					int vertexIndex, uvIndex, normalIndex;
-					
-					if (sscanf_s(face.c_str(), "%d/%d/%d", &vertexIndex, &uvIndex, &normalIndex) == 3) {
-						vertexIndices.push_back(vertexIndex - 1);
-						uvIndices.push_back(uvIndex - 1);
-						normalIndices.push_back(normalIndex - 1);
-					}
-					
-					else if (sscanf_s(face.c_str(), "%d/%d", &vertexIndex, &uvIndex) == 2) {
-						vertexIndices.push_back(vertexIndex - 1);
-						uvIndices.push_back(uvIndex - 1);
-					}
-				
-					else if (sscanf_s(face.c_str(), "%d", &vertexIndex) == 1) {
-						vertexIndices.push_back(vertexIndex - 1);
-						uvIndices.push_back(-1); 
-					}
-				}
-				for (size_t i = 0; i < vertexIndices.size(); ++i) {
-					OutFaceVertices.push_back(vertexIndices[i]);
-					OutFaceUvs.push_back(uvIndices.size() > i ? uvIndices[i] : -1);
-				}
-				
-				Outgcounts.push_back(vertexIndices.size());
-			}
-		}
-	}
-
-	inf.close();
-}
 
 
 void getFiles(string path, std::vector<string>& files)
@@ -139,41 +54,109 @@ void getFiles(string path, std::vector<string>& files)
 	}
 }
 
-// Fast vertex-position-only reader for animation frames after the first.
-// Uses strtof instead of istringstream for significantly faster float parsing.
-// reserveHint avoids reallocations since topology is constant across frames.
-static std::vector<vertice> ReadObjVerticesOnly(const std::string& path, size_t reserveHint)
+// Full per-frame mesh, already converted to Alembic-ready arrays. Each frame
+// carries its own topology so sequences whose vertex/face counts change over
+// time (fracture, fluid, remeshing sims) are represented correctly instead of
+// being frozen to the first frame's topology.
+struct FrameMesh
 {
-	std::vector<vertice> vertices;
-	vertices.reserve(reserveHint);
+	std::vector<V3f> positions;
+	std::vector<int32_t> faceIndices;   // flattened, file (CCW) order
+	std::vector<int32_t> faceCounts;    // vertices per face
+	std::vector<V2f> uvs;               // face-varying, only if hasUVs
+	bool hasUVs = false;
+};
+
+// Reads an OBJ frame fully (positions, faces, face-varying UVs) using manual
+// char parsing (strtof/strtol) to stay fast on multi-million-face frames.
+static FrameMesh ReadFrameMesh(const std::string& path, size_t vHint, size_t fHint)
+{
+	FrameMesh m;
 	std::ifstream file(path, std::ios::binary);
 	if (!file.is_open()) {
 		std::cerr << "Warning: could not open frame: " << path << std::endl;
-		return vertices;
+		return m;
 	}
+
+	m.positions.reserve(vHint);
+	m.faceIndices.reserve(fHint * 3);
+	m.faceCounts.reserve(fHint);
+	std::vector<V2f> rawUVs;
+	std::vector<int> faceUV;            // per face-vertex UV index (0-based), -1 if none
+	faceUV.reserve(fHint * 3);
+	bool anyMissingUV = false;
+
 	std::string line;
 	while (std::getline(file, line)) {
-		if (line.size() < 3 || line[0] != 'v' || line[1] != ' ') continue;
-		const char* p = line.c_str() + 2;
-		char* end;
-		vertice v;
-		v.x = strtof(p, &end);
-		v.y = strtof(end, &end);
-		v.z = strtof(end, nullptr);
-		vertices.push_back(v);
+		if (line.size() < 2) continue;
+		const char* p = line.c_str();
+		char c0 = p[0], c1 = p[1];
+
+		if (c0 == 'v' && c1 == ' ') {
+			char* e;
+			float x = strtof(p + 2, &e);
+			float y = strtof(e, &e);
+			float z = strtof(e, nullptr);
+			m.positions.push_back(V3f(x, y, z));
+		}
+		else if (c0 == 'v' && c1 == 't') {
+			char* e;
+			float u = strtof(p + 3, &e);
+			float v = strtof(e, nullptr);
+			rawUVs.push_back(V2f(u, v));
+		}
+		else if (c0 == 'f' && c1 == ' ') {
+			const char* q = p + 2;
+			int count = 0;
+			while (*q) {
+				while (*q == ' ' || *q == '\t' || *q == '\r') ++q;
+				if (!*q) break;
+				char* e;
+				long vi = strtol(q, &e, 10);
+				if (e == q) { ++q; continue; }  // not a number, skip char
+				int uvi = -1;
+				if (*e == '/') {
+					const char* u = e + 1;
+					if (*u != '/') {            // v/vt or v/vt/vn
+						char* e2;
+						long uv = strtol(u, &e2, 10);
+						if (e2 != u) uvi = (int)(uv - 1);
+					}
+				}
+				// advance past the whole token (handles v//vn, v/vt/vn)
+				q = e;
+				while (*q && *q != ' ' && *q != '\t' && *q != '\r') ++q;
+				m.faceIndices.push_back((int32_t)(vi - 1));
+				faceUV.push_back(uvi);
+				if (uvi < 0) anyMissingUV = true;
+				++count;
+			}
+			if (count > 0) m.faceCounts.push_back(count);
+		}
 	}
-	return vertices;
+
+	// Face-varying UVs only when every face corner has a valid UV index.
+	if (!rawUVs.empty() && !anyMissingUV) {
+		m.uvs.assign(faceUV.size(), V2f(0.0f, 0.0f));
+		m.hasUVs = true;
+		for (size_t i = 0; i < faceUV.size(); ++i) {
+			int idx = faceUV[i];
+			if (idx >= 0 && (size_t)idx < rawUVs.size()) {
+				m.uvs[i] = rawUVs[idx];
+			} else {
+				m.hasUVs = false;   // out-of-range reference: drop UVs for safety
+				break;
+			}
+		}
+		if (!m.hasUVs) m.uvs.clear();
+	}
+
+	return m;
 }
 
 void seq2abc(string inputdir, string ouputfile, float fps, std::string NodeName)
 {
-	std::vector<vertice> Vertices;
-	std::vector<vertice> Normals;
-	std::vector<uv> Uvs;
-	std::vector<int> FaceUvIndexs;
-	std::vector<int> face;
 	std::vector<string> filenames;
-	std::vector<int> g_counts_array;
 	getFiles(inputdir, filenames);
 	std::sort(filenames.begin(), filenames.end());
 
@@ -193,110 +176,93 @@ void seq2abc(string inputdir, string ouputfile, float fps, std::string NodeName)
 	OPolyMesh meshyObj(xfobj, NodeName, ts);
 	OPolyMeshSchema& mesh = meshyObj.getSchema();
 
-	// Read first frame to establish topology, UVs, and initial positions
-	ReadObj(filenames[0], Vertices, Uvs, Normals, face, FaceUvIndexs, g_counts_array);
-
-	std::vector<V3f> verts(Vertices.size());
-	for (size_t i = 0; i < Vertices.size(); ++i)
-		verts[i] = V3f(Vertices[i].x, Vertices[i].y, Vertices[i].z);
-
-	int32_t g_numIndices2 = (int32_t)face.size();
-	int32_t* g_indices2 = new int32_t[g_numIndices2];
-	std::copy(face.begin(), face.end(), g_indices2);
-	Abc::int32_t* g_counts2 = new Abc::int32_t[g_counts_array.size()];
-	std::copy(g_counts_array.begin(), g_counts_array.end(), g_counts2);
-
-	OPolyMeshSchema::Sample mesh_samp(
-		V3fArraySample(verts),
-		Int32ArraySample(g_indices2, g_numIndices2),
-		Int32ArraySample(g_counts2, g_counts_array.size()));
-
-	// Only write a UV set if the OBJ actually contains UV data. Otherwise the
-	// array stays uninitialized (Imath V2f does not zero its members), which
-	// would emit a garbage, non-deterministic UV map.
-	bool hasUVs = !Uvs.empty();
-	for (size_t i = 0; hasUVs && i < FaceUvIndexs.size(); ++i) {
-		if (FaceUvIndexs[i] == -1) { hasUVs = false; break; }
-	}
-
-	std::vector<V2f> FaceUvs;
-	if (hasUVs) {
+	// Read the first frame up front so we can size reservations and decide,
+	// from frame 0, whether this sequence carries UVs. (Doing this on the
+	// main thread keeps the UV-source-name set before any sample is written.)
+	FrameMesh first = ReadFrameMesh(filenames[0], 0, 0);
+	size_t vHint = first.positions.size();
+	size_t fHint = first.faceCounts.size();
+	bool writeUVs = first.hasUVs;
+	if (writeUVs)
 		mesh.setUVSourceName("UVMap");
-		FaceUvs.assign(FaceUvIndexs.size(), V2f(0.0f, 0.0f));
-		for (size_t i = 0; i < FaceUvIndexs.size(); ++i)
-			FaceUvs[i] = V2f(Uvs[FaceUvIndexs[i]].u, Uvs[FaceUvIndexs[i]].v);
-		V2fArraySample uvSample(FaceUvs);
-		mesh_samp.setUVs(OV2fGeomParam::Sample(uvSample, kFacevaryingScope));
-	}
 
-	mesh.set(mesh_samp);
-	std::cout << "PROGRESS 1 " << totalFrames << std::endl;
+	int remaining = totalFrames;
+	unsigned int numThreads = std::max(1u, std::thread::hardware_concurrency());
+	numThreads = std::min(numThreads, (unsigned int)remaining);
 
-	if (totalFrames > 1) {
-		int remaining = totalFrames - 1;
-		size_t vertexHint = Vertices.size();
+	// Bounded prefetch pipeline: worker threads read whole frames ahead while
+	// the main thread writes them to Alembic in order. Full frames are large,
+	// so keep the in-flight window modest to bound peak memory.
+	int window = std::max(2, (int)numThreads);
 
-		unsigned int numThreads = std::max(1u, std::thread::hardware_concurrency());
-		numThreads = std::min(numThreads, (unsigned int)remaining);
+	std::vector<FrameMesh> slots(remaining);
+	std::vector<char> ready(remaining, 0);
+	std::mutex mtx;
+	std::condition_variable cv;
+	std::atomic<int> nextRead(1);   // frame 0 already read on the main thread
+	int writeIndex = 0;             // guarded by mtx; frames the writer has consumed
 
-		// Bounded prefetch pipeline: worker threads read frames ahead while the
-		// main thread writes them to Alembic in order. Reading and writing overlap,
-		// and at most `window` frames are held in memory at once.
-		int window = std::max(2, (int)numThreads * 2);
+	slots[0] = std::move(first);
+	ready[0] = 1;
 
-		std::vector<std::vector<vertice>> slots(remaining);
-		std::vector<char> ready(remaining, 0);
-		std::mutex m;
-		std::condition_variable cv;
-		std::atomic<int> nextRead(0);
-		int writeIndex = 0;  // guarded by m; frames the writer has consumed
-
-		auto worker = [&]() {
-			while (true) {
-				int idx = nextRead.fetch_add(1);
-				if (idx >= remaining) break;
-				// Stay within the memory window of the writer.
-				{
-					std::unique_lock<std::mutex> lk(m);
-					cv.wait(lk, [&] { return idx < writeIndex + window; });
-				}
-				std::vector<vertice> data = ReadObjVerticesOnly(filenames[idx + 1], vertexHint);
-				{
-					std::lock_guard<std::mutex> lk(m);
-					slots[idx] = std::move(data);
-					ready[idx] = 1;
-				}
-				cv.notify_all();
-			}
-		};
-
-		std::vector<std::thread> workers;
-		workers.reserve(numThreads);
-		for (unsigned int t = 0; t < numThreads; ++t)
-			workers.emplace_back(worker);
-
-		// Write frames in order — Alembic is not thread-safe.
-		for (int i = 0; i < remaining; ++i) {
-			std::vector<vertice> fv;
+	auto worker = [&]() {
+		while (true) {
+			int idx = nextRead.fetch_add(1);
+			if (idx >= remaining) break;
 			{
-				std::unique_lock<std::mutex> lk(m);
-				cv.wait(lk, [&] { return ready[i] != 0; });
-				fv = std::move(slots[i]);
-				writeIndex = i + 1;
+				std::unique_lock<std::mutex> lk(mtx);
+				cv.wait(lk, [&] { return idx < writeIndex + window; });
 			}
-			cv.notify_all();  // let blocked readers advance into the freed window
+			FrameMesh data = ReadFrameMesh(filenames[idx], vHint, fHint);
+			{
+				std::lock_guard<std::mutex> lk(mtx);
+				slots[idx] = std::move(data);
+				ready[idx] = 1;
+			}
+			cv.notify_all();
+		}
+	};
 
-			for (size_t j = 0; j < fv.size() && j < verts.size(); ++j)
-				verts[j] = V3f(fv[j].x, fv[j].y, fv[j].z);
-			mesh.set(mesh_samp);
-			std::cout << "PROGRESS " << (i + 2) << " " << totalFrames << std::endl;
+	std::vector<std::thread> workers;
+	workers.reserve(numThreads);
+	for (unsigned int t = 0; t < numThreads; ++t)
+		workers.emplace_back(worker);
+
+	// Write frames in order — Alembic is not thread-safe. Each frame writes its
+	// own full topology, so changing vertex/face counts are preserved.
+	std::vector<V2f> zeroUVs;
+	for (int i = 0; i < remaining; ++i) {
+		FrameMesh fm;
+		{
+			std::unique_lock<std::mutex> lk(mtx);
+			cv.wait(lk, [&] { return ready[i] != 0; });
+			fm = std::move(slots[i]);
+			writeIndex = i + 1;
+		}
+		cv.notify_all();  // let blocked readers advance into the freed window
+
+		OPolyMeshSchema::Sample samp(
+			V3fArraySample(fm.positions),
+			Int32ArraySample(fm.faceIndices),
+			Int32ArraySample(fm.faceCounts));
+
+		// Keep the UV param's sample count aligned with the mesh: once UVs are
+		// written they must be written every frame. A frame missing UVs (rare,
+		// inconsistent input) gets a zero-filled set of the right length.
+		if (writeUVs) {
+			if (fm.hasUVs) {
+				samp.setUVs(OV2fGeomParam::Sample(V2fArraySample(fm.uvs), kFacevaryingScope));
+			} else {
+				zeroUVs.assign(fm.faceIndices.size(), V2f(0.0f, 0.0f));
+				samp.setUVs(OV2fGeomParam::Sample(V2fArraySample(zeroUVs), kFacevaryingScope));
+			}
 		}
 
-		for (auto& w : workers) w.join();
+		mesh.set(samp);
+		std::cout << "PROGRESS " << (i + 1) << " " << totalFrames << std::endl;
 	}
 
-	delete[] g_indices2;
-	delete[] g_counts2;
+	for (auto& w : workers) w.join();
 }
 
 void print_usage(const char* name)
