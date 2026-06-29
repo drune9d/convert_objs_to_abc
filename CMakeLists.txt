@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(convert_objs_to_abc LANGUAGES CXX)
+project(obj_sequence_to_alembic LANGUAGES CXX)
 
 if(NOT APPLE)
   message(FATAL_ERROR "This CMake build is intended for macOS. Windows users can keep using the Visual Studio solution.")

@@ -42,7 +42,7 @@ cat > "$APP_CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>
   <string>OBJ Sequence to Alembic</string>
   <key>CFBundleIdentifier</key>
-  <string>io.github.convert-objs-to-abc.app</string>
+  <string>io.github.obj-sequence-to-alembic.app</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>

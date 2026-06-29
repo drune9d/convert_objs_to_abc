@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-REPO="${GITHUB_REPOSITORY:-drune9d/convert_objs_to_abc}"
+REPO="${GITHUB_REPOSITORY:-drune9d/obj-sequence-to-alembic}"
 TAG="${1:-}"
 ZIP_PATH="$ROOT_DIR/dist/OBJ-Sequence-to-Alembic-macOS.zip"
 
