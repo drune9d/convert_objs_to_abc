@@ -177,6 +177,9 @@ void seq2abc(string inputdir, string ouputfile, float fps, std::string NodeName)
 	}
 
 	int totalFrames = (int)filenames.size();
+	std::cout << "Found " << totalFrames << " OBJ file(s) in: " << inputdir << std::endl;
+	if (totalFrames == 1)
+		std::cout << "Only one OBJ file was found, so the cache will have a single frame." << std::endl;
 
 	OArchive archive(Alembic::AbcCoreOgawa::WriteArchive(), ouputfile);
 	TimeSamplingPtr ts(new TimeSampling(1.0 / fps, 0.0));

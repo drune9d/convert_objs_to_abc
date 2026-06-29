@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+# When launched from Finder/.app the shell PATH is not inherited, so Homebrew
+# (in /opt/homebrew or /usr/local) and its Python are invisible. Restore PATH.
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$PATH"
+if command -v brew >/dev/null 2>&1; then
+  eval "$(brew shellenv)" || true
+fi
+
 TOOL_DIR="$(cd "$(dirname "$0")" && pwd)"
 GUI_PATH="$TOOL_DIR/gui.py"
 LOG_PATH="${TMPDIR:-/tmp}/obj-sequence-to-alembic-python-tk.log"
@@ -91,7 +98,7 @@ install_python_tk() {
   {
     echo "Installing python-tk with Homebrew..."
     date
-    brew install -y python-tk
+    brew install python-tk
   } >"$LOG_PATH" 2>&1
 }
 
