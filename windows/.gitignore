@@ -1,0 +1,9 @@
+_deps/
+build/
+bin/
+dist/
+output/
+vcpkg_installed/
+*.abc
+*.pyc
+__pycache__/

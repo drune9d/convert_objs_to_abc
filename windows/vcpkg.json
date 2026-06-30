@@ -1,0 +1,14 @@
+{
+  "name": "obj-sequence-to-alembic-windows",
+  "version-string": "1.2.2-windows",
+  "dependencies": [
+    {
+      "name": "alembic",
+      "features": [
+        "hdf5"
+      ]
+    },
+    "imath",
+    "zlib"
+  ]
+}

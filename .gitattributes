@@ -1,0 +1,20 @@
+# Normalize line endings so the macOS and Windows copies of shared source
+# (gui.py, Objs2Abc.cpp, CMakeLists.txt) don't show up as 100% different.
+* text=auto
+
+# Unix shell scripts and macOS launchers must stay LF, even when checked out
+# on Windows.
+*.sh        text eol=lf
+*.command   text eol=lf
+
+# Windows scripts must stay CRLF.
+*.bat       text eol=crlf
+*.ps1       text eol=crlf
+
+# OBJ frame data is plain text.
+*.obj       text
+
+# Binary assets.
+*.png       binary
+*.abc       binary
+*.ico       binary
